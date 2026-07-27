@@ -49,6 +49,7 @@ def set_session_cookie(response: Response, token: str) -> None:
 
 class MessageIn(BaseModel):
     text: str
+    conversation_id: int | None = None
 
 
 class SignupIn(BaseModel):
@@ -153,20 +154,23 @@ conn = psycopg.connect(
     password="postgres",
 )
 
-def get_or_create_conversation(user_id: int) -> int:
+def get_conversation(conversation_id: int, user_id: int) -> int | None:
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT id FROM conversations WHERE user_id = %s "
-            "ORDER BY started_at DESC LIMIT 1",
+            "SELECT id FROM conversations WHERE id = %s AND user_id = %s",
+            (conversation_id, user_id),
+        )
+        row = cur.fetchone()
+    conn.commit()
+    return row[0] if row is not None else None
+
+def create_conversation(user_id: int) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO conversations (user_id) VALUES (%s) RETURNING id",
             (user_id,),
         )
         row = cur.fetchone()
-        if row is None:
-            cur.execute(
-                "INSERT INTO conversations (user_id) VALUES (%s) RETURNING id",
-                (user_id,),
-            )
-            row = cur.fetchone()
     conn.commit()
     return row[0]
 
@@ -205,10 +209,45 @@ guardrails_log.addHandler(logging.StreamHandler())
 
 config = RailsConfig.from_path(str(Path(__file__).parent / "guardrails_config"))
 rails = LLMRails(config)
+@app.get("/conversations")
+async def list_conversations(user_id: int = Depends(get_current_user)):
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT c.id, c.updated_at, first_message.content "
+            "FROM conversations c "
+            "LEFT JOIN LATERAL ("
+            "SELECT content FROM messages "
+            "WHERE conversation_id = c.id AND role = 'user' "
+            "ORDER BY id LIMIT 1"
+            ") AS first_message ON true "
+            "WHERE c.user_id = %s "
+            "ORDER BY COALESCE(c.updated_at, c.started_at) DESC, c.id DESC",
+            (user_id,),
+        )
+        rows = cur.fetchall()
+    conn.commit()
+
+    return {
+        "ok": True,
+        "conversations": [
+            {
+                "id": conversation_id,
+                "title": title or "New conversation",
+                "updated_at": updated_at.isoformat() if updated_at else None,
+            }
+            for conversation_id, updated_at, title in rows
+        ],
+    }
 
 @app.post("/messages")
 async def create_message(message: MessageIn, user_id: int = Depends(get_current_user)):
-    conversation_id = get_or_create_conversation(user_id)
+    if message.conversation_id is None:
+        conversation_id = create_conversation(user_id)
+    else:
+        conversation_id = get_conversation(message.conversation_id, user_id)
+        if conversation_id is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+
     result = await rails.generate_async(
         messages=[{"role": "user", "content": message.text}]
     )
@@ -216,11 +255,19 @@ async def create_message(message: MessageIn, user_id: int = Depends(get_current_
 
     log_exchange(conversation_id, message.text, reply)
 
-    return {"ok": True, "reply": reply}
+    return {"ok": True, "reply": reply, "conversation_id": conversation_id}
 
 @app.get("/messages")
-async def get_messages(user_id: int = Depends(get_current_user)):
-    conv_id = get_or_create_conversation(user_id)
+async def get_messages(
+    conversation_id: int | None = None, user_id: int = Depends(get_current_user)
+):
+    if conversation_id is None:
+        return {"ok": True, "messages": []}
+
+    conv_id = get_conversation(conversation_id, user_id)
+    if conv_id is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
     with conn.cursor() as cur:
         cur.execute(
             "SELECT role, content FROM messages WHERE conversation_id = %s ORDER BY id",

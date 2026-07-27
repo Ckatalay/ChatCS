@@ -8,16 +8,34 @@ type Message = {
   isOwn: boolean;
 };
 
+type Conversation = {
+  id: number;
+  title: string;
+  updated_at: string | null;
+};
+
 export type User = {
   id: number;
   email: string;
   full_name: string | null;
 };
 
+async function fetchConversations(): Promise<Conversation[]> {
+  const response = await fetch("http://localhost:8000/conversations", {
+    credentials: "include",
+  });
+  if (!response.ok) return [];
+
+  const data = await response.json();
+  return data.conversations;
+}
+
 function App() {
   const [user, setUser] = useState<User | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
   const [authView, setAuthView] = useState<"login" | "signup">("login");
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [conversationId, setConversationId] = useState<number | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [text, setText] = useState("");
   const [isWaiting, setIsWaiting] = useState(false);
@@ -43,13 +61,36 @@ function App() {
 
   useEffect(() => {
     if (!user) return;
+    let cancelled = false;
+
+    async function loadConversations() {
+      const list = await fetchConversations();
+      if (cancelled) return;
+
+      setConversations(list);
+      setConversationId(list[0]?.id ?? null);
+    }
+    loadConversations();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user])
+
+  useEffect(() => {
+    if (!user || conversationId === null) return;
+    let cancelled = false;
+
     async function loadMessages() {
-      const response = await fetch("http://localhost:8000/messages", {
-        credentials: "include",
-      });
+      const response = await fetch(
+        `http://localhost:8000/messages?conversation_id=${conversationId}`,
+        { credentials: "include" }
+      );
       if (!response.ok) return;
 
       const data = await response.json();
+      if (cancelled) return;
+
       setMessages(
         data.messages.map((m: { role: string; content: string }, i: number) => ({
           id: i,
@@ -59,7 +100,11 @@ function App() {
       )
     }
     loadMessages();
-  }, [user])
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user, conversationId])
 
   if (checkingSession) {
     return <div>Loading</div>;
@@ -83,9 +128,17 @@ function App() {
       // Even if the request fails, clear the client so the user can re-auth.
     } finally {
       setUser(null);
+      setConversations([]);
+      setConversationId(null);
       setMessages([]);
       setText("");
     }
+  }
+
+  function handleNewConversation() {
+    setConversationId(null);
+    setMessages([]);
+    setText("");
   }
 
   async function handleSend() {
@@ -107,7 +160,7 @@ function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ text: trimmed }),
+        body: JSON.stringify({ text: trimmed, conversation_id: conversationId }),
       });
 
       if (response.status === 401) {
@@ -121,6 +174,8 @@ function App() {
         ...current,
         { id: Date.now(), text: data.reply, isOwn: false },
       ]);
+      setConversationId(data.conversation_id);
+      setConversations(await fetchConversations());
     } finally {
       setIsWaiting(false);
     }
@@ -143,21 +198,139 @@ function App() {
   return (
     <div
       style={{
-        minHeight: "100svh",
+        height: "100svh",
         display: "flex",
-        flexDirection: "column",
         background: "linear-gradient(180deg, #f7f7fb 0%, #eef2f7 100%)",
       }}
     >
-      <Header user={user} onLogout={handleLogout} />
-      <Messages messages={messages} isWaiting={isWaiting} />
-      <TextBox
-        text={text}
-        onTextChange={setText}
-        onSend={handleSend}
-        isWaiting={isWaiting}
+      <Sidebar
+        conversations={conversations}
+        activeId={conversationId}
+        onSelect={setConversationId}
+        onNewConversation={handleNewConversation}
       />
+
+      <div
+        style={{
+          flex: 1,
+          minWidth: 0,
+          display: "flex",
+          flexDirection: "column",
+        }}
+      >
+        <Header user={user} onLogout={handleLogout} />
+        <Messages messages={messages} isWaiting={isWaiting} />
+        <TextBox
+          text={text}
+          onTextChange={setText}
+          onSend={handleSend}
+          isWaiting={isWaiting}
+        />
+      </div>
     </div>
+  );
+}
+
+function Sidebar({
+  conversations,
+  activeId,
+  onSelect,
+  onNewConversation,
+}: {
+  conversations: Conversation[];
+  activeId: number | null;
+  onSelect: (id: number) => void;
+  onNewConversation: () => void;
+}) {
+  return (
+    <aside
+      style={{
+        width: 260,
+        flexShrink: 0,
+        display: "flex",
+        flexDirection: "column",
+        background: "rgba(255, 255, 255, 0.9)",
+        borderRight: "1px solid #d8dbe2",
+        backdropFilter: "blur(8px)",
+      }}
+    >
+      <div style={{ padding: 12, borderBottom: "1px solid #d8dbe2" }}>
+        <button
+          type="button"
+          onClick={onNewConversation}
+          style={{
+            width: "100%",
+            border: "1px solid #cfd5df",
+            borderRadius: 999,
+            padding: "10px 16px",
+            background: activeId === null ? "#e8f1fd" : "#fff",
+            color: "#374151",
+            font: "inherit",
+            fontWeight: 600,
+            cursor: "pointer",
+          }}
+        >
+          New chat
+        </button>
+      </div>
+
+      <nav
+        aria-label="Conversations"
+        style={{
+          flex: 1,
+          minHeight: 0,
+          overflowY: "auto",
+          padding: 8,
+          display: "flex",
+          flexDirection: "column",
+          gap: 4,
+        }}
+      >
+        {conversations.length === 0 ? (
+          <p style={{ padding: "8px 10px", fontSize: 14, color: "#6b7280" }}>
+            No conversations yet
+          </p>
+        ) : (
+          conversations.map((conversation) => (
+            <button
+              key={conversation.id}
+              type="button"
+              onClick={() => onSelect(conversation.id)}
+              aria-current={conversation.id === activeId ? "true" : undefined}
+              style={{
+                border: "none",
+                borderRadius: 10,
+                padding: "10px",
+                textAlign: "left",
+                background:
+                  conversation.id === activeId ? "#e8f1fd" : "transparent",
+                color: "#374151",
+                font: "inherit",
+                fontSize: 15,
+                cursor: "pointer",
+              }}
+            >
+              <span
+                style={{
+                  display: "block",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                  fontWeight: conversation.id === activeId ? 600 : 400,
+                }}
+              >
+                {conversation.title}
+              </span>
+              {conversation.updated_at && (
+                <span style={{ fontSize: 12, color: "#6b7280" }}>
+                  {new Date(conversation.updated_at).toLocaleDateString()}
+                </span>
+              )}
+            </button>
+          ))
+        )}
+      </nav>
+    </aside>
   );
 }
 
@@ -241,6 +414,8 @@ function Messages({
     <div
       style={{
         flex: 1,
+        minHeight: 0,
+        overflowY: "auto",
         padding: "16px",
         display: "flex",
         flexDirection: "column",
