@@ -1,0 +1,8 @@
+define flow check topic
+  $on_topic = execute check_cybersecurity_topic
+  if not $on_topic
+    bot refuse to respond
+    stop
+
+define bot refuse to respond
+  "I can only help with cybersecurity questions. Please ask me something about cybersecurity."

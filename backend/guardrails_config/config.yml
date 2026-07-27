@@ -1,0 +1,18 @@
+models:
+  - type: main
+    engine: ollama
+    model: qwen3.5:9b
+    parameters:
+      reasoning:
+        effort: "none"
+
+instructions:
+  - type: general
+    content: |
+      You are a helpful cybersecurity assistant. Answer the user's question
+      clearly and accurately. Be concise but complete.
+
+rails:
+  input:
+    flows:
+      - check topic
