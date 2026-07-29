@@ -20,10 +20,36 @@ export type User = {
   full_name: string | null;
 };
 
+const API = "http://localhost:8000";
+
+let refreshInFlight: Promise<boolean> | null = null;
+
+function refreshSession(): Promise<boolean> {
+  if (!refreshInFlight) {
+    refreshInFlight = fetch(`${API}/auth/refresh`, {
+      method: "POST",
+      credentials: "include",
+    })
+      .then((response) => response.ok)
+      .catch(() => false)
+      .finally(() => {
+        refreshInFlight = null;
+      });
+  }
+  return refreshInFlight;
+}
+
+async function authFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const send = () => fetch(`${API}${path}`, { ...init, credentials: "include" });
+
+  const response = await send();
+  if (response.status !== 401) return response;
+
+  return (await refreshSession()) ? send() : response;
+}
+
 async function fetchConversations(): Promise<Conversation[]> {
-  const response = await fetch("http://localhost:8000/conversations", {
-    credentials: "include",
-  });
+  const response = await authFetch("/conversations");
   if (!response.ok) return [];
 
   const data = await response.json();
@@ -43,9 +69,7 @@ function App() {
   useEffect(() => {
     async function checkSession() {
       try {
-        const response = await fetch("http://localhost:8000/auth/me", {
-          credentials: "include",
-        });
+        const response = await authFetch("/auth/me");
         if (response.ok) {
           const data = await response.json();
           setUser(data.user);
@@ -82,9 +106,8 @@ function App() {
     let cancelled = false;
 
     async function loadMessages() {
-      const response = await fetch(
-        `http://localhost:8000/messages?conversation_id=${conversationId}`,
-        { credentials: "include" }
+      const response = await authFetch(
+        `/messages?conversation_id=${conversationId}`
       );
       if (!response.ok) return;
 
@@ -120,7 +143,7 @@ function App() {
 
   async function handleLogout() {
     try {
-      await fetch("http://localhost:8000/auth/logout", {
+      await fetch(`${API}/auth/logout`, {
         method: "POST",
         credentials: "include",
       });
@@ -156,10 +179,9 @@ function App() {
     setIsWaiting(true);
 
     try {
-      const response = await fetch("http://localhost:8000/messages", {
+      const response = await authFetch("/messages", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        credentials: "include",
         body: JSON.stringify({ text: trimmed, conversation_id: conversationId }),
       });
 

@@ -6,12 +6,34 @@ from fastapi import Cookie, FastAPI, HTTPException, Response, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from nemoguardrails import LLMRails, RailsConfig
 from pydantic import BaseModel
+from pydantic_settings import BaseSettings, SettingsConfigDict
 import psycopg
+import jwt
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=Path(__file__).parent / ".env",
+        extra="ignore",
+    )
+
+    jwt_secret: str
+    cookie_secure: bool = False
+
+
+settings = Settings()
+
 app = FastAPI()
 ph = PasswordHasher()
+
+JWT_ALG = "HS256"
+ACCESS_TTL = timedelta(minutes=15)
+REFRESH_TTL = timedelta(days=7)
+ACCESS_COOKIE = "access_token"
+REFRESH_COOKIE = "refresh_token"
+REFRESH_PATH = "/auth"
 
 app.add_middleware(
     CORSMiddleware,
@@ -21,13 +43,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-SESSION_TTL = timedelta(days=7)
-SESSION_COOKIE = "session_token"
+def create_access_token(user_id: int) -> str:
+    now = datetime.now(timezone.utc)
+    return jwt.encode(
+        {
+            "sub": str(user_id),
+            "iat": now,
+            "exp": now + ACCESS_TTL,
+        },
+        settings.jwt_secret,
+        algorithm=JWT_ALG,
+    )
 
 
-def create_session(user_id: int) -> str:
+def create_refresh_token(user_id: int) -> str:
+    """Opaque, server-side, revocable. This is what makes logout real."""
     token = secrets.token_urlsafe(32)
-    expires_at = datetime.now(timezone.utc) + SESSION_TTL
+    expires_at = datetime.now(timezone.utc) + REFRESH_TTL
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO sessions (token, user_id, expires_at) VALUES (%s, %s, %s)",
@@ -37,14 +69,32 @@ def create_session(user_id: int) -> str:
     return token
 
 
-def set_session_cookie(response: Response, token: str) -> None:
+def set_access_cookie(response: Response, token: str) -> None:
     response.set_cookie(
-        key=SESSION_COOKIE,
+        key=ACCESS_COOKIE,
         value=token,
         httponly=True,
         samesite="lax",
-        max_age=int(SESSION_TTL.total_seconds()),
+        secure=settings.cookie_secure,
+        max_age=int(ACCESS_TTL.total_seconds()),
     )
+
+
+def set_refresh_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key=REFRESH_COOKIE,
+        value=token,
+        httponly=True,
+        samesite="lax",
+        secure=settings.cookie_secure,
+        max_age=int(REFRESH_TTL.total_seconds()),
+        path=REFRESH_PATH,
+    )
+
+
+def issue_credentials(response: Response, user_id: int) -> None:
+    set_access_cookie(response, create_access_token(user_id))
+    set_refresh_cookie(response, create_refresh_token(user_id))
 
 
 class MessageIn(BaseModel):
@@ -92,7 +142,7 @@ def signup(data: SignupIn, response: Response):
         conn.rollback()
         raise
 
-    set_session_cookie(response, create_session(user_id))
+    issue_credentials(response, user_id)
     return {
         "ok": True,
         "user": {"id": user_id, "email": email, "full_name": data.full_name},
@@ -128,22 +178,40 @@ def login(data: LoginIn, response: Response):
         except Exception:
             conn.rollback()
 
-    set_session_cookie(response, create_session(user_id))
+    issue_credentials(response, user_id)
     return {"ok": True, "user": {"id": user_id, "email": email, "full_name": full_name}}
 
-@app.post("/auth/logout")
-def logout(response: Response, session_token: str | None = Cookie(None)):
-    if session_token is None:
+@app.post("/auth/refresh")
+def refresh(response: Response, refresh_token: str | None = Cookie(None)):
+    if refresh_token is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     with conn.cursor() as cur:
         cur.execute(
-            "DELETE FROM sessions WHERE token = %s",
-            (session_token,),
+            "SELECT user_id FROM sessions WHERE token = %s AND expires_at > now()",
+            (refresh_token,),
         )
+        row = cur.fetchone()
+    conn.commit()
+
+    if row is None:
+        raise HTTPException(status_code=401, detail="Session invalid or expired")
+
+    set_access_cookie(response, create_access_token(row[0]))
+    return {"ok": True}
+
+@app.post("/auth/logout")
+def logout(response: Response, refresh_token: str | None = Cookie(None)):
+    if refresh_token is not None:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM sessions WHERE token = %s",
+                (refresh_token,),
+            )
         conn.commit()
 
-    response.delete_cookie(SESSION_COOKIE)
+    response.delete_cookie(ACCESS_COOKIE)
+    response.delete_cookie(REFRESH_COOKIE, path=REFRESH_PATH)
     return {"ok": True}
 
 conn = psycopg.connect(
@@ -174,6 +242,19 @@ def create_conversation(user_id: int) -> int:
     conn.commit()
     return row[0]
 
+HISTORY_TURNS = 10  # 5 exchanges
+
+def get_history(conversation_id: int, limit: int | None = None) -> list[dict]:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT role, content FROM messages WHERE conversation_id = %s "
+            "ORDER BY id DESC LIMIT %s",
+            (conversation_id, limit),
+        )
+        rows = cur.fetchall()
+    conn.commit()
+    return [{"role": role, "content": content} for role, content in reversed(rows)]
+
 def log_exchange(conversation_id: int, user_text: str, reply: str) -> None:
     with conn.cursor() as cur:
         cur.execute(
@@ -187,21 +268,22 @@ def log_exchange(conversation_id: int, user_text: str, reply: str) -> None:
         )
     conn.commit()
 
-def get_current_user(session_token: str | None = Cookie(None)) -> int:
-    if session_token is None:
+def get_current_user(access_token: str | None = Cookie(None)) -> int:
+    if access_token is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT user_id FROM sessions WHERE token = %s AND expires_at > now()",
-            (session_token,),
-        )
-        row = cur.fetchone()
-    conn.commit()
+    try:
+        payload = jwt.decode(access_token, settings.jwt_secret, algorithms=[JWT_ALG])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
 
-    if row is None:
-        raise HTTPException(401, detail="Session invalid or expired")
-    return row[0]
+    try:
+        return int(payload["sub"])
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(status_code=401, detail="Invalid token")
+
 
 guardrails_log = logging.getLogger("chatcs.guardrails")
 guardrails_log.setLevel(logging.INFO)
@@ -243,13 +325,22 @@ async def list_conversations(user_id: int = Depends(get_current_user)):
 async def create_message(message: MessageIn, user_id: int = Depends(get_current_user)):
     if message.conversation_id is None:
         conversation_id = create_conversation(user_id)
+        history = []
     else:
         conversation_id = get_conversation(message.conversation_id, user_id)
         if conversation_id is None:
             raise HTTPException(status_code=404, detail="Conversation not found")
+        history = get_history(conversation_id, HISTORY_TURNS)
 
+    # History is read server-side rather than accepted from the client: the
+    # topic gate trusts it, so the client must not be able to forge it. The
+    # context message is what makes it reachable from check_cybersecurity_topic.
     result = await rails.generate_async(
-        messages=[{"role": "user", "content": message.text}]
+        messages=[
+            {"role": "context", "content": {"history": history}},
+            *history,
+            {"role": "user", "content": message.text},
+        ]
     )
     reply = result["content"]
 
@@ -264,22 +355,10 @@ async def get_messages(
     if conversation_id is None:
         return {"ok": True, "messages": []}
 
-    conv_id = get_conversation(conversation_id, user_id)
-    if conv_id is None:
+    if get_conversation(conversation_id, user_id) is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT role, content FROM messages WHERE conversation_id = %s ORDER BY id",
-            (conv_id,),
-        )
-        rows = cur.fetchall()
-    conn.commit()
-
-    return {
-        "ok": True, 
-        "messages": [{"role": role, "content": content} for role, content in rows]
-    }
+    return {"ok": True, "messages": get_history(conversation_id)}
 
 @app.get("/auth/me")
 async def get_user(user_id: int = Depends(get_current_user)):
