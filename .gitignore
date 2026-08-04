@@ -23,6 +23,8 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 
+mcp/cve_registry_*.json
+
 # Logs
 logs/
 *.log

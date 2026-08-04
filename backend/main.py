@@ -11,6 +11,7 @@ import psycopg
 import jwt
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
+from cve_tools import gather_cve_context
 
 
 class Settings(BaseSettings):
@@ -285,9 +286,12 @@ def get_current_user(access_token: str | None = Cookie(None)) -> int:
         raise HTTPException(status_code=401, detail="Invalid token")
 
 
-guardrails_log = logging.getLogger("chatcs.guardrails")
-guardrails_log.setLevel(logging.INFO)
-guardrails_log.addHandler(logging.StreamHandler())
+for logger_name in ("chatcs.guardrails", "chatcs.cve"):
+    _log = logging.getLogger(logger_name)
+    _log.setLevel(logging.INFO)
+    _log.addHandler(logging.StreamHandler())
+    # Otherwise every line is emitted twice once uvicorn installs a root handler.
+    _log.propagate = False
 
 config = RailsConfig.from_path(str(Path(__file__).parent / "guardrails_config"))
 rails = LLMRails(config)
@@ -322,7 +326,11 @@ async def list_conversations(user_id: int = Depends(get_current_user)):
     }
 
 @app.post("/messages")
-async def create_message(message: MessageIn, user_id: int = Depends(get_current_user)):
+async def create_message(
+    message: MessageIn,
+    user_id: int = Depends(get_current_user),
+    access_token: str | None = Cookie(None),
+):
     if message.conversation_id is None:
         conversation_id = create_conversation(user_id)
         history = []
@@ -332,12 +340,21 @@ async def create_message(message: MessageIn, user_id: int = Depends(get_current_
             raise HTTPException(status_code=404, detail="Conversation not found")
         history = get_history(conversation_id, HISTORY_TURNS)
 
+    try:
+        cve_context = await gather_cve_context(message.text, history, access_token)
+    except Exception:
+        logging.getLogger("chatcs.cve").exception("CVE lookup failed")
+        cve_context = ""
+
     # History is read server-side rather than accepted from the client: the
     # topic gate trusts it, so the client must not be able to forge it. The
     # context message is what makes it reachable from check_cybersecurity_topic.
     result = await rails.generate_async(
         messages=[
-            {"role": "context", "content": {"history": history}},
+            {
+                "role": "context",
+                "content": {"history": history, "relevant_chunks": cve_context},
+            },
             *history,
             {"role": "user", "content": message.text},
         ]

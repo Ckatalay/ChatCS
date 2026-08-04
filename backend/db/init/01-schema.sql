@@ -64,3 +64,39 @@ CREATE TABLE IF NOT EXISTS messages (
 -- list_conversations(). Leading id keeps the sort in the index.
 CREATE INDEX IF NOT EXISTS messages_conversation_id_id_idx
     ON messages (conversation_id, id);
+
+
+-- pg_trgm backs the ILIKE substring search in the MCP server's search_cves
+-- tool. Without it a description match is a 372k-row seq scan.
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+-- Bulk-imported from a cve_registry export; see mcp/load_cves.py. id and
+-- cve_id both come from the source and are both unique across all 372,904
+-- rows, so a CVE belongs to exactly one company.
+CREATE TABLE IF NOT EXISTS cve_registry (
+    id                bigint PRIMARY KEY,
+    cve_id            text NOT NULL UNIQUE,
+    date_reserved     timestamptz,
+    description       text,
+    is_cisa_kev       boolean,
+    last_modified_at  timestamptz,
+    published_at      timestamptz,
+    status            text,
+    title             text,
+    updated_at        timestamptz,
+    company_id        bigint NOT NULL REFERENCES companies (id)
+);
+
+-- Every tool in the MCP server filters by company_id first (tenant scoping),
+-- then orders by recency — so lead with the tenant and carry the sort.
+CREATE INDEX IF NOT EXISTS cve_registry_company_published_idx
+    ON cve_registry (company_id, published_at DESC);
+
+CREATE INDEX IF NOT EXISTS cve_registry_description_trgm_idx
+    ON cve_registry USING gin (description gin_trgm_ops);
+
+-- 1,656 of the rows are CISA known-exploited; the rest are NULL, so a partial
+-- index stays tiny and still serves the "what's actively exploited" tool.
+CREATE INDEX IF NOT EXISTS cve_registry_kev_idx
+    ON cve_registry (company_id, published_at DESC)
+    WHERE is_cisa_kev;

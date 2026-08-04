@@ -1,0 +1,13 @@
+[project]
+name = "cve-mcp"
+version = "0.1.0"
+description = "MCP server exposing the CVE registry to ChatCS"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.141.1",
+    "mcp[cli]>=2.0.0",
+    "psycopg[pool]>=3.3.4",
+    "pydantic-settings>=2.14.2",
+    "pyjwt>=2.13.0",
+]

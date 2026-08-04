@@ -8,6 +8,7 @@ dependencies = [
     "argon2-cffi>=25.1.0",
     "black>=26.5.1",
     "fastapi[standard]>=0.139.2",
+    "fastmcp>=3.4.5",
     "langchain-ollama>=1.1.0",
     "nemoguardrails>=0.23.0",
     "ollama>=0.6.2",

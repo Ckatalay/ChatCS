@@ -3,14 +3,42 @@ models:
     engine: ollama
     model: qwen3.5:9b
     parameters:
+      num_ctx: 32768
+      temperature: 0
       reasoning:
-        effort: "none"
+        effort: "low"
 
 instructions:
   - type: general
     content: |
       You are a helpful cybersecurity assistant. Answer the user's question
       clearly and accurately. Be concise but complete.
+
+prompts:
+  - task: general
+    content: |-
+      {{ general_instructions }}
+      {% if relevant_chunks %}
+
+      These records are from the user's CVE registry. Base your answer on them
+      rather than on recollection, and name the CVE ids you draw on in your own
+      sentences. Copy each id character for character from the records below,
+      and name no id, product, vendor, or version that does not appear there.
+
+      Write it as a security briefing, not as a report about a lookup. Every
+      phrase below has come back in a reply and none of them belong in one:
+      do not open with "based on the registry" or similar; do not describe the
+      registry as authoritative, internal, or a source; do not mention that
+      anything was fetched, queried, or listed; do not add bracketed citations;
+      and do not note which records are absent unless the user asked about
+      something the records genuinely do not cover, in which case say so once,
+      in a sentence, and stop. Write dates and status in plain words.
+
+      {{ relevant_chunks }}
+      {% endif %}
+
+      {{ history | user_assistant_sequence }}
+      Assistant:
 
 rails:
   input:
