@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { User } from "./App";
+import { API, type User } from "./api";
 
 function Login({
   onLogin,
@@ -19,7 +19,7 @@ function Login({
     setError(null);
     setIsBusy(true);
     try {
-      const response = await fetch("http://localhost:8000/auth/login", {
+      const response = await fetch(`${API}/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -39,48 +39,24 @@ function Login({
   }
 
   return (
-    <div
-      style={{
-        minHeight: "100svh",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: 16,
-        background: "linear-gradient(180deg, #f7f7fb 0%, #eef2f7 100%)",
-      }}
-    >
+    <div className="auth">
       <form
+        className="auth-card"
         onSubmit={(event) => {
           event.preventDefault();
-          if (canSubmit) {
-            handleSubmit();
-          }
-        }}
-        style={{
-          width: "100%",
-          maxWidth: 380,
-          display: "flex",
-          flexDirection: "column",
-          gap: 16,
-          padding: "32px 28px",
-          borderRadius: 20,
-          background: "rgba(255, 255, 255, 0.9)",
-          border: "1px solid #d8dbe2",
-          boxShadow:
-            "rgba(0, 0, 0, 0.1) 0 10px 15px -3px, rgba(0, 0, 0, 0.05) 0 4px 6px -2px",
+          if (canSubmit) handleSubmit();
         }}
       >
-        <div style={{ textAlign: "center", marginBottom: 8 }}>
-          <h2 style={{ margin: 0, color: "#08060d" }}>ChatCS</h2>
-          <p style={{ fontSize: 15, color: "#6b7280" }}>
-            Sign in to your cybersecurity assistant
-          </p>
+        <div className="auth-head">
+          <span className="brand-mark" aria-hidden="true">
+            CS
+          </span>
+          <h1>Welcome back</h1>
+          <p>Sign in to your cybersecurity assistant</p>
         </div>
 
-        <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          <span style={{ fontSize: 14, fontWeight: 600, color: "#374151" }}>
-            Email
-          </span>
+        <label className="field">
+          <span>Email</span>
           <input
             type="email"
             value={email}
@@ -88,78 +64,36 @@ function Login({
             placeholder="you@turkcell.com"
             autoComplete="email"
             autoFocus
-            style={{
-              border: "1px solid #cfd5df",
-              borderRadius: 12,
-              padding: "12px 16px",
-              font: "inherit",
-              outline: "none",
-              background: "#fff",
-              color: "#08060d",
-            }}
           />
         </label>
 
-        <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          <span style={{ fontSize: 14, fontWeight: 600, color: "#374151" }}>
-            Password
-          </span>
+        <label className="field">
+          <span>Password</span>
           <input
             type="password"
             value={password}
             onChange={(event) => setPassword(event.target.value)}
             placeholder="••••••••"
             autoComplete="current-password"
-            style={{
-              border: "1px solid #cfd5df",
-              borderRadius: 12,
-              padding: "12px 16px",
-              font: "inherit",
-              outline: "none",
-              background: "#fff",
-              color: "#08060d",
-            }}
           />
         </label>
 
         {error && (
-          <p style={{ fontSize: 14, textAlign: "center", color: "#ef4444" }}>
+          <p className="form-error" role="alert">
             {error}
           </p>
         )}
 
-        <button
-          type="submit"
-          disabled={!canSubmit}
-          style={{
-            border: "none",
-            borderRadius: 12,
-            padding: "12px 18px",
-            marginTop: 8,
-            background: canSubmit ? "#0b93f6" : "#9fc9ef",
-            color: "#fff",
-            font: "inherit",
-            fontWeight: 600,
-            cursor: canSubmit ? "pointer" : "default",
-          }}
-        >
+        <button type="submit" className="primary-button" disabled={!canSubmit}>
           {isBusy ? "Signing in…" : "Sign in"}
         </button>
 
-        <p style={{ fontSize: 14, textAlign: "center", color: "#6b7280" }}>
+        <p className="auth-switch">
           Don't have an account?{" "}
           <button
             type="button"
+            className="link-button"
             onClick={onSwitchToSignup}
-            style={{
-              border: "none",
-              padding: 0,
-              background: "none",
-              font: "inherit",
-              fontWeight: 600,
-              color: "#0b93f6",
-              cursor: "pointer",
-            }}
           >
             Sign up
           </button>

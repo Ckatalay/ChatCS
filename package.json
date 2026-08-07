@@ -10,9 +10,13 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "highlight.js": "^11.11.1",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
-    "react-fitty": "^1.0.1"
+    "react-fitty": "^1.0.1",
+    "react-markdown": "^10.1.0",
+    "rehype-highlight": "^7.0.2",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@babel/core": "^7.29.7",

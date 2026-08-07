@@ -23,5 +23,40 @@ services:
       timeout: 5s
       retries: 10
 
+  ollama:
+    image: ollama/ollama:latest
+    container_name: chatcs-ollama
+    restart: unless-stopped
+    ports:
+      # The ollama python clients in backend/ default to 127.0.0.1:11434, so
+      # publishing the port is what lets the host-side backend reach this
+      # without any OLLAMA_HOST setting. A native `ollama serve` already holds
+      # this port — stop it first, or the container will fail to bind.
+      - "11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # One-shot: pulls the two models into the volume, then exits. Cheap to re-run
+  # on every `up` — a pull of an already-present model is a no-op.
+  ollama-pull:
+    image: ollama/ollama:latest
+    container_name: chatcs-ollama-pull
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      # Talks to the server container over the compose network, so it needs no
+      # volume of its own.
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["/bin/sh", "-c"]
+    command: "ollama pull gemma3:1b && ollama pull qwen3.5:9b"
+    restart: "no"
+
 volumes:
   pgdata:
+  ollama:

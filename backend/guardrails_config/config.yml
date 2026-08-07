@@ -1,7 +1,7 @@
 models:
   - type: main
     engine: ollama
-    model: qwen3.5:9b
+    model: qwen3.5-cyber
     parameters:
       num_ctx: 32768
       temperature: 0

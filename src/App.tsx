@@ -1,6 +1,28 @@
-import { useState, useEffect } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import Login from "./Login";
 import Signup from "./Signup";
+import Markdown from "./Markdown";
+import {
+  API,
+  authFetch,
+  fetchConversations,
+  type Conversation,
+  type User,
+} from "./api";
+import {
+  CheckIcon,
+  CopyIcon,
+  LogoutIcon,
+  PlusIcon,
+  SendIcon,
+  SidebarIcon,
+} from "./icons";
 
 type Message = {
   id: number;
@@ -8,52 +30,22 @@ type Message = {
   isOwn: boolean;
 };
 
-type Conversation = {
-  id: number;
-  title: string;
-  updated_at: string | null;
-};
+const MOBILE = "(max-width: 860px)";
 
-export type User = {
-  id: number;
-  email: string;
-  full_name: string | null;
-};
+const SUGGESTIONS = [
+  "Explain CVE-2024-3094 and how to check if we are exposed.",
+  "Write a hardening checklist for a public-facing nginx server.",
+  "What is the difference between SAST, DAST and SCA?",
+  "Draft an incident response plan for a ransomware detection.",
+];
 
-const API = "http://localhost:8000";
+let nextMessageId = 1;
+const newId = () => nextMessageId++;
 
-let refreshInFlight: Promise<boolean> | null = null;
-
-function refreshSession(): Promise<boolean> {
-  if (!refreshInFlight) {
-    refreshInFlight = fetch(`${API}/auth/refresh`, {
-      method: "POST",
-      credentials: "include",
-    })
-      .then((response) => response.ok)
-      .catch(() => false)
-      .finally(() => {
-        refreshInFlight = null;
-      });
-  }
-  return refreshInFlight;
-}
-
-async function authFetch(path: string, init: RequestInit = {}): Promise<Response> {
-  const send = () => fetch(`${API}${path}`, { ...init, credentials: "include" });
-
-  const response = await send();
-  if (response.status !== 401) return response;
-
-  return (await refreshSession()) ? send() : response;
-}
-
-async function fetchConversations(): Promise<Conversation[]> {
-  const response = await authFetch("/conversations");
-  if (!response.ok) return [];
-
-  const data = await response.json();
-  return data.conversations;
+function initials(user: User): string {
+  const source = user.full_name?.trim() || user.email;
+  const parts = source.split(/[\s@._-]+/).filter(Boolean);
+  return (parts[0]?.[0] ?? "?") + (parts[1]?.[0] ?? "");
 }
 
 function App() {
@@ -65,6 +57,23 @@ function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [text, setText] = useState("");
   const [isWaiting, setIsWaiting] = useState(false);
+
+  const [isMobile, setIsMobile] = useState(
+    () => window.matchMedia(MOBILE).matches
+  );
+  const [sidebarOpen, setSidebarOpen] = useState(
+    () => !window.matchMedia(MOBILE).matches
+  );
+
+  useEffect(() => {
+    const query = window.matchMedia(MOBILE);
+    function sync(event: MediaQueryListEvent) {
+      setIsMobile(event.matches);
+      setSidebarOpen(!event.matches);
+    }
+    query.addEventListener("change", sync);
+    return () => query.removeEventListener("change", sync);
+  }, []);
 
   useEffect(() => {
     async function checkSession() {
@@ -99,7 +108,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [user])
+  }, [user]);
 
   useEffect(() => {
     if (!user || conversationId === null) return;
@@ -115,31 +124,35 @@ function App() {
       if (cancelled) return;
 
       setMessages(
-        data.messages.map((m: { role: string; content: string }, i: number) => ({
-          id: i,
+        data.messages.map((m: { role: string; content: string }) => ({
+          id: newId(),
           text: m.content,
           isOwn: m.role === "user",
         }))
-      )
+      );
     }
     loadMessages();
 
     return () => {
       cancelled = true;
     };
-  }, [user, conversationId])
+  }, [user, conversationId]);
 
-  if (checkingSession) {
-    return <div>Loading</div>;
-  }
+  const selectConversation = useCallback(
+    (id: number) => {
+      setConversationId(id);
+      setText("");
+      if (isMobile) setSidebarOpen(false);
+    },
+    [isMobile]
+  );
 
-  if (!user) {
-    return authView === "login" ? (
-      <Login onLogin={setUser} onSwitchToSignup={() => setAuthView("signup")} />
-    ) : (
-      <Signup onSignup={setUser} onSwitchToLogin={() => setAuthView("login")} />
-    );
-  }
+  const startNewConversation = useCallback(() => {
+    setConversationId(null);
+    setMessages([]);
+    setText("");
+    if (isMobile) setSidebarOpen(false);
+  }, [isMobile]);
 
   async function handleLogout() {
     try {
@@ -158,22 +171,13 @@ function App() {
     }
   }
 
-  function handleNewConversation() {
-    setConversationId(null);
-    setMessages([]);
-    setText("");
-  }
-
-  async function handleSend() {
-    const trimmed = text.trim();
-
-    if (!trimmed || isWaiting) {
-      return;
-    }
+  async function send(raw: string) {
+    const trimmed = raw.trim();
+    if (!trimmed || isWaiting) return;
 
     setMessages((current) => [
       ...current,
-      { id: Date.now(), text: trimmed, isOwn: true },
+      { id: newId(), text: trimmed, isOwn: true },
     ]);
     setText("");
     setIsWaiting(true);
@@ -190,161 +194,152 @@ function App() {
         return;
       }
 
+      if (!response.ok) {
+        setMessages((current) => [
+          ...current,
+          {
+            id: newId(),
+            text: "⚠️ The assistant could not answer that request. Please try again.",
+            isOwn: false,
+          },
+        ]);
+        return;
+      }
+
       const data = await response.json();
 
       setMessages((current) => [
         ...current,
-        { id: Date.now(), text: data.reply, isOwn: false },
+        { id: newId(), text: data.reply, isOwn: false },
       ]);
       setConversationId(data.conversation_id);
       setConversations(await fetchConversations());
+    } catch {
+      setMessages((current) => [
+        ...current,
+        {
+          id: newId(),
+          text: "⚠️ Could not reach the server. Is the backend running?",
+          isOwn: false,
+        },
+      ]);
     } finally {
       setIsWaiting(false);
     }
   }
 
-  if (!user) {
-    return authView === "login" ? (
-      <Login
-        onLogin={setUser}
-        onSwitchToSignup={() => setAuthView("signup")}
-      />
-    ) : (
-      <Signup
-        onSignup={setUser}
-        onSwitchToLogin={() => setAuthView("login")}
-      />
+  if (checkingSession) {
+    return (
+      <div className="boot">
+        <div className="spinner" role="status" aria-label="Loading" />
+      </div>
     );
   }
 
+  if (!user) {
+    return authView === "login" ? (
+      <Login onLogin={setUser} onSwitchToSignup={() => setAuthView("signup")} />
+    ) : (
+      <Signup onSignup={setUser} onSwitchToLogin={() => setAuthView("login")} />
+    );
+  }
+
+  const activeTitle =
+    conversations.find((c) => c.id === conversationId)?.title ?? "New chat";
+
   return (
-    <div
-      style={{
-        height: "100svh",
-        display: "flex",
-        background: "linear-gradient(180deg, #f7f7fb 0%, #eef2f7 100%)",
-      }}
-    >
+    <div className="app">
       <Sidebar
+        open={sidebarOpen}
+        user={user}
         conversations={conversations}
         activeId={conversationId}
-        onSelect={setConversationId}
-        onNewConversation={handleNewConversation}
+        onSelect={selectConversation}
+        onNewConversation={startNewConversation}
+        onLogout={handleLogout}
       />
 
-      <div
-        style={{
-          flex: 1,
-          minWidth: 0,
-          display: "flex",
-          flexDirection: "column",
-        }}
-      >
-        <Header user={user} onLogout={handleLogout} />
-        <Messages messages={messages} isWaiting={isWaiting} />
-        <TextBox
+      {isMobile && sidebarOpen && (
+        <button
+          type="button"
+          className="scrim"
+          aria-label="Close sidebar"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+
+      <main className="main">
+        <Thread
+          title={activeTitle}
+          messages={messages}
+          isWaiting={isWaiting}
+          onToggleSidebar={() => setSidebarOpen((open) => !open)}
+          onSuggestion={send}
+        />
+
+        <Composer
           text={text}
           onTextChange={setText}
-          onSend={handleSend}
+          onSend={() => send(text)}
           isWaiting={isWaiting}
         />
-      </div>
+      </main>
     </div>
   );
 }
 
+/* ------------------------------------------------------------------ */
+
 function Sidebar({
+  open,
+  user,
   conversations,
   activeId,
   onSelect,
   onNewConversation,
+  onLogout,
 }: {
+  open: boolean;
+  user: User;
   conversations: Conversation[];
   activeId: number | null;
   onSelect: (id: number) => void;
   onNewConversation: () => void;
+  onLogout: () => void;
 }) {
   return (
-    <aside
-      style={{
-        width: 260,
-        flexShrink: 0,
-        display: "flex",
-        flexDirection: "column",
-        background: "rgba(255, 255, 255, 0.9)",
-        borderRight: "1px solid #d8dbe2",
-        backdropFilter: "blur(8px)",
-      }}
-    >
-      <div style={{ padding: 12, borderBottom: "1px solid #d8dbe2" }}>
-        <button
-          type="button"
-          onClick={onNewConversation}
-          style={{
-            width: "100%",
-            border: "1px solid #cfd5df",
-            borderRadius: 999,
-            padding: "10px 16px",
-            background: activeId === null ? "#e8f1fd" : "#fff",
-            color: "#374151",
-            font: "inherit",
-            fontWeight: 600,
-            cursor: "pointer",
-          }}
-        >
-          New chat
-        </button>
+    <aside className="sidebar" data-collapsed={!open} inert={!open || undefined}>
+      <div className="sidebar-head">
+        <span className="brand">
+          <span className="brand-mark" aria-hidden="true">
+            CS
+          </span>
+          ChatCS
+        </span>
       </div>
 
-      <nav
-        aria-label="Conversations"
-        style={{
-          flex: 1,
-          minHeight: 0,
-          overflowY: "auto",
-          padding: 8,
-          display: "flex",
-          flexDirection: "column",
-          gap: 4,
-        }}
-      >
+      <button type="button" className="new-chat" onClick={onNewConversation}>
+        <PlusIcon />
+        New chat
+      </button>
+
+      <nav className="conv-list" aria-label="Conversations">
+        <div className="conv-list-label">Recent</div>
+
         {conversations.length === 0 ? (
-          <p style={{ padding: "8px 10px", fontSize: 14, color: "#6b7280" }}>
-            No conversations yet
-          </p>
+          <p className="conv-empty">No conversations yet</p>
         ) : (
           conversations.map((conversation) => (
             <button
               key={conversation.id}
               type="button"
+              className="conv"
               onClick={() => onSelect(conversation.id)}
               aria-current={conversation.id === activeId ? "true" : undefined}
-              style={{
-                border: "none",
-                borderRadius: 10,
-                padding: "10px",
-                textAlign: "left",
-                background:
-                  conversation.id === activeId ? "#e8f1fd" : "transparent",
-                color: "#374151",
-                font: "inherit",
-                fontSize: 15,
-                cursor: "pointer",
-              }}
             >
-              <span
-                style={{
-                  display: "block",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                  fontWeight: conversation.id === activeId ? 600 : 400,
-                }}
-              >
-                {conversation.title}
-              </span>
+              <span className="conv-title">{conversation.title}</span>
               {conversation.updated_at && (
-                <span style={{ fontSize: 12, color: "#6b7280" }}>
+                <span className="conv-date">
                   {new Date(conversation.updated_at).toLocaleDateString()}
                 </span>
               )}
@@ -352,111 +347,169 @@ function Sidebar({
           ))
         )}
       </nav>
+
+      <div className="sidebar-foot">
+        <div className="account">
+          <span className="avatar" aria-hidden="true">
+            {initials(user)}
+          </span>
+          <span className="account-name" title={user.email}>
+            {user.full_name ?? user.email}
+          </span>
+          <button
+            type="button"
+            className="icon-button"
+            onClick={onLogout}
+            title="Sign out"
+            aria-label="Sign out"
+          >
+            <LogoutIcon />
+          </button>
+        </div>
+      </div>
     </aside>
   );
 }
 
-function Header({ user, onLogout }: { user: User; onLogout: () => void }) {
-  return (
-    <header
-      style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: 12,
-        padding: "12px 16px",
-        background: "rgba(255, 255, 255, 0.9)",
-        borderBottom: "1px solid #d8dbe2",
-        backdropFilter: "blur(8px)",
-      }}
-    >
-      <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
-        <strong style={{ color: "#08060d", fontSize: 15 }}>ChatCS</strong>
-        <span
-          style={{
-            fontSize: 13,
-            color: "#6b7280",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {user.full_name ?? user.email}
-        </span>
-      </div>
-
-      <button
-        type="button"
-        onClick={onLogout}
-        style={{
-          border: "1px solid #cfd5df",
-          borderRadius: 999,
-          padding: "8px 16px",
-          background: "#fff",
-          color: "#374151",
-          font: "inherit",
-          fontWeight: 600,
-          cursor: "pointer",
-        }}
-      >
-        Sign out
-      </button>
-    </header>
-  );
-}
-
-function Bubble({ text, isOwn }: { text: string; isOwn: boolean }) {
-  return (
-    <div
-      style={{
-        display: "inline-block",
-        maxWidth: "70%",
-        padding: "8px 12px",
-        borderRadius: 16,
-        wordBreak: "break-word",
-        overflowWrap: "break-word",
-        alignSelf: isOwn ? "flex-end" : "flex-start",
-        background: isOwn ? "#0b93f6" : "#e5e5ea",
-        color: isOwn ? "#fff" : "#000",
-      }}
-    >
-      {text}
-    </div>
-  );
-}
-
-function Messages({
+function Thread({
+  title,
   messages,
   isWaiting,
+  onToggleSidebar,
+  onSuggestion,
 }: {
+  title: string;
   messages: Message[];
   isWaiting: boolean;
+  onToggleSidebar: () => void;
+  onSuggestion: (text: string) => void;
 }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const endRef = useRef<HTMLDivElement>(null);
+  const [scrolled, setScrolled] = useState(false);
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ block: "end" });
+  }, [messages, isWaiting]);
+
+  const isEmpty = messages.length === 0 && !isWaiting;
+
   return (
-    <div
-      style={{
-        flex: 1,
-        minHeight: 0,
-        overflowY: "auto",
-        padding: "16px",
-        display: "flex",
-        flexDirection: "column",
-        gap: "8px",
-      }}
-    >
-      {messages.map((message) => (
-        <Bubble
-          key={message.id}
-          text={message.text}
-          isOwn={message.isOwn}
-        />
-      ))}
-      {isWaiting && <Bubble text="…" isOwn={false} />}
+    <>
+      <header className="topbar" data-scrolled={scrolled}>
+        <button
+          type="button"
+          className="icon-button"
+          onClick={onToggleSidebar}
+          title="Toggle sidebar"
+          aria-label="Toggle sidebar"
+        >
+          <SidebarIcon />
+        </button>
+        <h1 className="topbar-title">{title}</h1>
+      </header>
+
+      <div
+        className="thread"
+        ref={scrollRef}
+        onScroll={(event) => setScrolled(event.currentTarget.scrollTop > 4)}
+      >
+        {isEmpty ? (
+          <div className="empty">
+            <span className="brand-mark" aria-hidden="true">
+              CS
+            </span>
+            <h1>How can I help you today?</h1>
+            <p>
+              Ask about vulnerabilities, hardening, incident response, or paste
+              a finding you want explained.
+            </p>
+            <div className="suggestions">
+              {SUGGESTIONS.map((suggestion) => (
+                <button
+                  key={suggestion}
+                  type="button"
+                  className="suggestion"
+                  onClick={() => onSuggestion(suggestion)}
+                >
+                  {suggestion}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="thread-inner">
+            {messages.map((message) =>
+              message.isOwn ? (
+                <div key={message.id} className="turn turn-user">
+                  <div className="user-bubble">{message.text}</div>
+                </div>
+              ) : (
+                <Answer key={message.id} text={message.text} />
+              )
+            )}
+
+            {isWaiting && (
+              <div className="turn turn-assistant">
+                <div className="assistant-head">
+                  <span className="brand-mark" aria-hidden="true">
+                    CS
+                  </span>
+                  ChatCS
+                </div>
+                <div className="typing" role="status" aria-label="Thinking">
+                  <span />
+                  <span />
+                  <span />
+                </div>
+              </div>
+            )}
+
+            <div ref={endRef} />
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+function Answer({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
+    } catch {
+      // Clipboard unavailable — the text stays selectable.
+    }
+  }
+
+  return (
+    <div className="turn turn-assistant">
+      <div className="assistant-head">
+        <span className="brand-mark" aria-hidden="true">
+          CS
+        </span>
+        ChatCS
+      </div>
+
+      <div className="answer">
+        <Markdown>{text}</Markdown>
+      </div>
+
+      <div className="turn-actions">
+        <button type="button" className="ghost-button" onClick={copy}>
+          {copied ? <CheckIcon /> : <CopyIcon />}
+          {copied ? "Copied" : "Copy"}
+        </button>
+      </div>
     </div>
   );
 }
 
-function TextBox({
+function Composer({
   text,
   onTextChange,
   onSend,
@@ -467,55 +520,58 @@ function TextBox({
   onSend: () => void;
   isWaiting: boolean;
 }) {
-  return (
-    <form
-      onSubmit={(event) => {
-        event.preventDefault();
-        onSend();
-      }}
-      style={{
-        display: "flex",
-        gap: "8px",
-        padding: "12px",
-        background: "rgba(255, 255, 255, 0.9)",
-        borderTop: "1px solid #d8dbe2",
-        backdropFilter: "blur(8px)",
-      }}
-    >
-      <input
-        type="text"
-        value={text}
-        onChange={(event) => onTextChange(event.target.value)}
-        placeholder="Enter text"
-        style={{
-          flex: 1,
-          border: "1px solid #cfd5df",
-          borderRadius: 999,
-          padding: "12px 16px",
-          font: "inherit",
-          outline: "none",
-          background: "#fff",
-        }}
-      />
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-      <button
-        type="submit"
-        disabled={isWaiting}
-        style={{
-          border: "none",
-          borderRadius: 999,
-          padding: "12px 18px",
-          background: isWaiting ? "#9fc9ef" : "#0b93f6",
-          color: "#fff",
-          font: "inherit",
-          fontWeight: 600,
-          cursor: isWaiting ? "default" : "pointer",
+  // Grow the textarea with its content, up to the CSS max-height.
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    textarea.style.height = `${textarea.scrollHeight}px`;
+  }, [text]);
+
+  const canSend = text.trim() !== "" && !isWaiting;
+
+  return (
+    <div className="composer-wrap">
+      <form
+        className="composer"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSend();
         }}
       >
-        Send
-      </button>
-    </form>
+        <textarea
+          ref={textareaRef}
+          rows={1}
+          value={text}
+          onChange={(event) => onTextChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              onSend();
+            }
+          }}
+          placeholder="Ask ChatCS anything about security…"
+          aria-label="Message"
+        />
+
+        <button
+          type="submit"
+          className="send"
+          disabled={!canSend}
+          title="Send"
+          aria-label="Send message"
+        >
+          <SendIcon />
+        </button>
+      </form>
+
+      <p className="composer-hint">
+        Enter to send · Shift + Enter for a new line
+      </p>
+    </div>
   );
 }
 
-export default App
+export default App;
