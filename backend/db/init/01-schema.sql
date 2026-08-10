@@ -87,8 +87,10 @@ CREATE TABLE IF NOT EXISTS cve_registry (
     company_id        bigint NOT NULL REFERENCES companies (id)
 );
 
--- Every tool in the MCP server filters by company_id first (tenant scoping),
--- then orders by recency — so lead with the tenant and carry the sort.
+-- Serves company_cves(), the one tool still scoped to a single tenant: filter
+-- by company_id, then order by recency — so lead with the tenant and carry the
+-- sort. The other tools read the whole registry; see 03-cve-lookup.sql for the
+-- indexes they need.
 CREATE INDEX IF NOT EXISTS cve_registry_company_published_idx
     ON cve_registry (company_id, published_at DESC);
 
@@ -96,7 +98,8 @@ CREATE INDEX IF NOT EXISTS cve_registry_description_trgm_idx
     ON cve_registry USING gin (description gin_trgm_ops);
 
 -- 1,656 of the rows are CISA known-exploited; the rest are NULL, so a partial
--- index stays tiny and still serves the "what's actively exploited" tool.
+-- index stays tiny. Tenant-scoped for company_cves(); the registry-wide KEV
+-- listing uses cve_registry_kev_published_idx from 03-cve-lookup.sql.
 CREATE INDEX IF NOT EXISTS cve_registry_kev_idx
     ON cve_registry (company_id, published_at DESC)
     WHERE is_cisa_kev;

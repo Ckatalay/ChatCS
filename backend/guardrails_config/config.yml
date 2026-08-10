@@ -20,10 +20,19 @@ prompts:
       {{ general_instructions }}
       {% if relevant_chunks %}
 
-      These records are from the user's CVE registry. Base your answer on them
-      rather than on recollection, and name the CVE ids you draw on in your own
-      sentences. Copy each id character for character from the records below,
-      and name no id, product, vendor, or version that does not appear there.
+      These records are from the CVE registry, which covers published CVEs
+      generally. Base your answer on them rather than on recollection, and name
+      the CVE ids you draw on in your own sentences. Copy each id character for
+      character from the records below, and name no id, product, vendor, or
+      version that does not appear there.
+
+      A record marked as tracked in this company's own registry is one the
+      user's company is affected by — say so plainly, and treat it as the more
+      urgent part of the answer. A record marked as not in it is still a real
+      CVE worth explaining; say the company does not track it and carry on
+      answering the question. Say nothing about which company this is, and
+      never name, number, or speculate about any company — that information
+      does not exist in the records and must not be invented.
 
       Write it as a security briefing, not as a report about a lookup. Every
       phrase below has come back in a reply and none of them belong in one:

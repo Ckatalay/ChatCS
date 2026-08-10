@@ -72,10 +72,14 @@ class ChatCSTokenVerifier(TokenVerifier):
 server = MCPServer(
     name="cve-registry",
     instructions=(
-        "Look up CVEs for the signed-in user's company. Prefer search_cves for "
-        "topic questions ('Chrome sandbox escapes'), get_cve when the user "
-        "names an id, and known_exploited when they ask what is actively being "
-        "exploited. There is no way to query another company; do not try."
+        "Look up any published CVE. Prefer search_cves for topic questions "
+        "('Chrome sandbox escapes'), get_cve when the user names an id, "
+        "known_exploited when they ask what is actively being exploited, and "
+        "company_cves for 'what are we exposed to' questions. Every record "
+        "carries in_company_registry: true means the signed-in user's own "
+        "company tracks that CVE. That flag is the only company information "
+        "available — no company is ever named or identified, including the "
+        "user's own, and there is no way to ask about another one."
     ),
     lifespan=lifespan,
     token_verifier=ChatCSTokenVerifier(),
@@ -94,6 +98,12 @@ def current_company_id() -> int:
 
 
 async def fetch(sql: str, params: tuple) -> list[dict]:
+    """Run a query against cve_lookup with the caller's tenant in scope.
+
+    The GUC is what cve_lookup.in_company_registry compares against, so it is
+    set for every read even though no tool passes company_id as a parameter
+    any more.
+    """
     company_id = current_company_id()
     async with pool.connection() as conn:
         async with conn.transaction():
@@ -109,20 +119,23 @@ async def fetch(sql: str, params: tuple) -> list[dict]:
 async def search_cves(query: str, limit: int = 20) -> list[dict]:
     """Search published CVEs by substring, matched against title and description.
 
-    Use for topic questions ("Chrome sandbox escapes", "OpenSSL"). The match is
-    literal, not semantic, so pass a product or technology name rather than a
-    sentence. Returns newest first.
+    Covers the whole registry, not just the user's own company. Use for topic
+    questions ("Chrome sandbox escapes", "OpenSSL"). The match is literal, not
+    semantic, so pass a product or technology name rather than a sentence.
+
+    Records the user's company tracks come first, then newest first. Read that
+    from in_company_registry rather than from the ordering.
     """
     return await fetch(
         "SELECT cve_id, title, description, "
-        "       status, is_cisa_kev, published_at "
-        "FROM cve_registry "
-        "WHERE company_id = %s AND status = 'PUBLISHED' "
+        "       status, is_cisa_kev, published_at, in_company_registry "
+        "FROM cve_lookup "
+        "WHERE status = 'PUBLISHED' "
         "  AND (description ILIKE %s OR title ILIKE %s) "
-        "ORDER BY published_at DESC NULLS LAST "
+        "ORDER BY in_company_registry DESC NULLS LAST, "
+        "         published_at DESC NULLS LAST "
         "LIMIT %s",
         (
-            current_company_id(),
             f"%{query}%",
             f"%{query}%",
             min(limit, MAX_ROWS),
@@ -134,52 +147,78 @@ async def search_cves(query: str, limit: int = 20) -> list[dict]:
 async def get_cve(cve_id: str) -> dict | None:
     """Fetch one CVE by its id, e.g. "CVE-2026-20316".
 
-    Use whenever the user names an id. Returns the full record including the
-    reserved/published/modified dates, or null when the id is not in this
-    company's registry.
+    Use whenever the user names an id. Answers for any CVE in the registry,
+    whatever company tracks it. Returns the full record including the
+    reserved/published/modified dates and in_company_registry — true when the
+    user's own company tracks this CVE — or null when the id is not in the
+    registry at all.
     """
     rows = await fetch(
         "SELECT cve_id, title, description, status, is_cisa_kev, "
-        "       date_reserved, published_at, last_modified_at "
-        "FROM cve_registry WHERE cve_id = %s AND company_id = %s",
-        (cve_id.strip().upper(), current_company_id()),
+        "       date_reserved, published_at, last_modified_at, "
+        "       in_company_registry "
+        "FROM cve_lookup WHERE cve_id = %s",
+        (cve_id.strip().upper(),),
     )
     return rows[0] if rows else None
 
 
 @server.tool()
 async def recent_cves(limit: int = 20) -> list[dict]:
-    """List the most recently published CVEs, newest first.
+    """List the most recently published CVEs registry-wide, newest first.
 
     Use for "what's new" questions with no product or topic attached. When the
-    user names a technology, prefer search_cves.
+    user names a technology, prefer search_cves; when they ask what their own
+    company is exposed to, prefer company_cves.
     """
     return await fetch(
         "SELECT cve_id, title, description, "
-        "       is_cisa_kev, published_at "
-        "FROM cve_registry "
-        "WHERE company_id = %s AND status = 'PUBLISHED' "
+        "       is_cisa_kev, published_at, in_company_registry "
+        "FROM cve_lookup "
+        "WHERE status = 'PUBLISHED' "
         "ORDER BY published_at DESC NULLS LAST "
         "LIMIT %s",
-        (current_company_id(), min(limit, MAX_ROWS)),
+        (min(limit, MAX_ROWS),),
     )
 
 
 @server.tool()
 async def known_exploited(limit: int = 20) -> list[dict]:
-    """List CVEs on the CISA Known Exploited Vulnerabilities catalog, newest first.
+    """List CVEs on the CISA Known Exploited Vulnerabilities catalog.
 
     These are confirmed to be exploited in the wild, so use this for "what is
-    actively being exploited" and patch-priority questions.
+    actively being exploited" and patch-priority questions. Covers the whole
+    registry; the ones the user's own company tracks come first, then newest
+    first.
     """
     return await fetch(
         "SELECT cve_id, title, description, "
-        "       published_at "
-        "FROM cve_registry "
-        "WHERE company_id = %s AND is_cisa_kev "
+        "       published_at, in_company_registry "
+        "FROM cve_lookup "
+        "WHERE is_cisa_kev "
+        "ORDER BY in_company_registry DESC NULLS LAST, "
+        "         published_at DESC NULLS LAST "
+        "LIMIT %s",
+        (min(limit, MAX_ROWS),),
+    )
+
+
+@server.tool()
+async def company_cves(limit: int = 20) -> list[dict]:
+    """List the CVEs the signed-in user's own company tracks, newest first.
+
+    Use for "what are we exposed to", "what is in our registry", and patch
+    planning for this company specifically. For a question about a named CVE
+    use get_cve, which reports company membership for that one record.
+    """
+    return await fetch(
+        "SELECT cve_id, title, description, status, is_cisa_kev, "
+        "       published_at, in_company_registry "
+        "FROM cve_lookup "
+        "WHERE in_company_registry "
         "ORDER BY published_at DESC NULLS LAST "
         "LIMIT %s",
-        (current_company_id(), min(limit, MAX_ROWS)),
+        (min(limit, MAX_ROWS),),
     )
 
 

@@ -10,13 +10,16 @@ TOOL_MODEL = "qwen3.5:9b"
 MAX_ROUNDS = 2
 MAX_CONTEXT_CHARS = 12000
 
-TOOL_SYSTEM_PROMPT = """You have read access to this company's CVE registry.
+TOOL_SYSTEM_PROMPT = """You have read access to a CVE registry covering every
+published CVE, not only the ones this company tracks.
 
-Call a tool when the answer depends on which CVEs this company actually tracks:
-their ids, dates, exploitation status, or whether a given CVE is in the registry
-at all. Answer without tools when the question is about general security
-concepts, definitions, or practices — the registry holds vulnerability records,
-not explanations.
+Call a tool when the answer depends on a real vulnerability record: its id,
+dates, description, exploitation status, or whether this company tracks it.
+Always call get_cve when the user names a CVE id — the registry answers for any
+id, and it is the only way to tell whether this company is among the affected.
+Answer without tools when the question is about general security concepts,
+definitions, or practices — the registry holds vulnerability records, not
+explanations.
 
 Do not write a reply. Only decide which tools to call, if any."""
 
@@ -42,12 +45,24 @@ def _date(value) -> str | None:
     return text[:10] if len(text) >= 10 else text
 
 
-def _render_row(row: dict) -> str:
+def _render_row(row: dict, membership: str = "mark") -> str:
     heading = row.get("cve_id") or "(unidentified)"
     if row.get("title"):
         heading = f"{heading} — {row['title']}"
 
     facts = []
+    # The tools return a membership flag and never a company identifier, so
+    # this phrase is the whole of what the model can learn about tenancy. Said
+    # first because "are we affected?" is the question behind most lookups.
+    # "mark" calls out only the hits, which is what a list wants; "state" says
+    # it either way, which is what a single named CVE wants; "skip" is for
+    # results whose heading already says every row is a hit.
+    tracked = row.get("in_company_registry")
+    if membership != "skip" and tracked is not None:
+        if tracked:
+            facts.append("tracked in this company's own registry")
+        elif membership == "state":
+            facts.append("not in this company's own registry")
     if row.get("is_cisa_kev"):
         facts.append("confirmed exploited in the wild (CISA KEV)")
     if (status := row.get("status")) and status != "PUBLISHED":
@@ -71,6 +86,8 @@ def _render_row(row: dict) -> str:
 
 def _render(call_name: str, arguments: dict, rows) -> str:
     if rows is None or rows == []:
+        if call_name == "get_cve" and (target := arguments.get("cve_id")):
+            return f"No CVE with the id {target} exists in the registry."
         target = arguments.get("cve_id") or arguments.get("query")
         return f"No registry records{f' for {target}' if target else ''}."
 
@@ -85,9 +102,13 @@ def _render(call_name: str, arguments: dict, rows) -> str:
         "get_cve": "Registry record",
         "recent_cves": "Most recently published registry records",
         "known_exploited": "Registry records confirmed exploited in the wild",
+        "company_cves": "Registry records this company tracks",
     }
     heading = headings.get(call_name, "Registry records")
-    body = "\n\n".join(_render_row(row) for row in rows if isinstance(row, dict))
+    membership = {"get_cve": "state", "company_cves": "skip"}.get(call_name, "mark")
+    body = "\n\n".join(
+        _render_row(row, membership) for row in rows if isinstance(row, dict)
+    )
     return f"## {heading} ({len(rows)})\n\n{body}"
 
 
