@@ -5,8 +5,12 @@ models:
     parameters:
       num_ctx: 32768
       temperature: 0
+      # Off, not "low". With thinking on, a registry-backed answer spends the
+      # whole generation reasoning about the records and stops before writing a
+      # word, so the reply comes back empty. Ollama's OpenAI-compatible route
+      # wants an object here — a bare `false` fails to unmarshal and 400s.
       reasoning:
-        effort: "low"
+        effort: none
 
 instructions:
   - type: general
@@ -34,6 +38,17 @@ prompts:
       never name, number, or speculate about any company — that information
       does not exist in the records and must not be invented.
 
+      That flag is the whole of what you can see about who is affected: it says
+      whether this one company tracks the CVE and nothing whatsoever about any
+      other organisation. When the user asks who else is affected, which
+      companies suffer from it, or how many there are, open by saying you can
+      only see this company's own exposure and cannot speak for anyone else,
+      then answer the rest from the records. A CVE the company does not track is
+      one you know nothing about the exposure of, not one nobody is exposed to.
+      Never write that this company is the only one affected, that no others are
+      mentioned, or anything else that reads the silence of the records as an
+      answer — the records are silent about other companies by design.
+
       Write it as a security briefing, not as a report about a lookup. Every
       phrase below has come back in a reply and none of them belong in one:
       do not open with "based on the registry" or similar; do not describe the
@@ -52,4 +67,7 @@ prompts:
 rails:
   input:
     flows:
+      # Ordered: the gate refuses first and stops the chain, so a rejected
+      # message never reaches the registry.
       - check topic
+      - fetch cve context

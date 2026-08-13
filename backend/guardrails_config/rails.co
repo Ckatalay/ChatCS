@@ -6,3 +6,6 @@ define flow check topic
 
 define bot refuse to respond
   "I can only help with cybersecurity questions. Please ask me something about cybersecurity."
+
+define flow fetch cve context
+  $relevant_chunks = execute fetch_cve_context

@@ -6,7 +6,6 @@ from ollama import AsyncClient
 log = logging.getLogger("chatcs.cve")
 
 MCP_URL = "http://localhost:8001/mcp"
-TOOL_MODEL = "qwen3.5:9b"
 MAX_ROUNDS = 2
 MAX_CONTEXT_CHARS = 12000
 
@@ -113,7 +112,7 @@ def _render(call_name: str, arguments: dict, rows) -> str:
 
 
 async def gather_cve_context(
-    user_text: str, history: list[dict], access_token: str
+    user_text: str, history: list[dict], access_token: str, model: str
 ) -> str:
     blocks: list[str] = []
 
@@ -129,11 +128,11 @@ async def gather_cve_context(
         ollama = AsyncClient()
         for _ in range(MAX_ROUNDS):
             response = await ollama.chat(
-                model=TOOL_MODEL,
+                model=model,
                 messages=messages,
                 tools=tools,
                 stream=False,
-                think="low",
+                think=False,
                 options={"temperature": 0, "num_ctx": 32768},
             )
             calls = response["message"].get("tool_calls") or []

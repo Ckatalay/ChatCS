@@ -629,7 +629,7 @@ textarea {
   max-width: var(--thread-width);
   margin: 0 auto;
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   gap: 8px;
   padding: 8px 8px 8px 16px;
   border: 1px solid var(--border-strong);

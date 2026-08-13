@@ -11,7 +11,6 @@ import psycopg
 import jwt
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
-from cve_tools import gather_cve_context
 
 
 class Settings(BaseSettings):
@@ -295,6 +294,7 @@ for logger_name in ("chatcs.guardrails", "chatcs.cve"):
 
 config = RailsConfig.from_path(str(Path(__file__).parent / "guardrails_config"))
 rails = LLMRails(config)
+
 @app.get("/conversations")
 async def list_conversations(user_id: int = Depends(get_current_user)):
     with conn.cursor() as cur:
@@ -340,20 +340,16 @@ async def create_message(
             raise HTTPException(status_code=404, detail="Conversation not found")
         history = get_history(conversation_id, HISTORY_TURNS)
 
-    try:
-        cve_context = await gather_cve_context(message.text, history, access_token)
-    except Exception:
-        logging.getLogger("chatcs.cve").exception("CVE lookup failed")
-        cve_context = ""
-
     # History is read server-side rather than accepted from the client: the
     # topic gate trusts it, so the client must not be able to forge it. The
-    # context message is what makes it reachable from check_cybersecurity_topic.
+    # context message is what makes it, and the caller's token, reachable from
+    # the input rails — the topic gate reads the history, the registry lookup
+    # reads both and writes back the records it finds.
     result = await rails.generate_async(
         messages=[
             {
                 "role": "context",
-                "content": {"history": history, "relevant_chunks": cve_context},
+                "content": {"history": history, "access_token": access_token},
             },
             *history,
             {"role": "user", "content": message.text},

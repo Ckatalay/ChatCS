@@ -1,9 +1,12 @@
 import logging
 from typing import Literal, Optional
 
+from nemoguardrails import RailsConfig
 from nemoguardrails.actions import action
 from ollama import AsyncClient
 from pydantic import BaseModel
+
+from cve_tools import gather_cve_context
 
 log = logging.getLogger("chatcs.guardrails")
 
@@ -127,3 +130,33 @@ async def check_cybersecurity_topic(context: Optional[dict] = None) -> bool:
         check.justification,
     )
     return allowed
+
+
+# Registry lookups belong behind the topic gate, not in front of it: as an input
+# rail ordered after `check topic`, a refused message never reaches the MCP
+# server, so an off-topic or manipulative turn costs nothing. The answer model
+# reads what this returns as `relevant_chunks` — the same variable the general
+# prompt renders — so the rails, not the endpoint, own retrieval.
+@action(name="fetch_cve_context")
+async def fetch_cve_context(
+    context: Optional[dict] = None, config: Optional[RailsConfig] = None
+) -> str:
+    ctx = context or {}
+
+    # The tool loop drives the answer model, so it reads its name off the same
+    # config the rails were built from rather than keeping a second copy.
+    model = next(entry.model for entry in config.models if entry.type == "main")
+
+    try:
+        return await gather_cve_context(
+            ctx.get("user_message", ""),
+            ctx.get("history") or [],
+            ctx.get("access_token"),
+            model,
+        )
+    except Exception:
+        # Swallowed rather than raised: a registry that is down should cost the
+        # answer its records, not turn the whole turn into an error. Raising here
+        # gets the rail's internal-error message spoken back to the user.
+        log.exception("CVE lookup failed")
+        return ""
