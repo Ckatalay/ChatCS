@@ -268,6 +268,44 @@ def log_exchange(conversation_id: int, user_text: str, reply: str) -> None:
         )
     conn.commit()
 
+_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\", '"': '"', "'": "'"}
+
+
+def unescape_reply(reply: str) -> str:
+    """Decode a reply the answer model wrote as an escaped one-liner.
+
+    With `reasoning.effort: none` the model stops emitting real newlines and
+    writes the whole answer as a JSON-style escaped string — every break comes
+    back as a literal backslash-n, so the markdown renderer sees one paragraph
+    with `\\n` sprinkled through it. NeMo does this repair itself for predefined
+    bot messages (`clean_utterance_content`), but the general-task branch that
+    answers here never calls it, so we do.
+
+    Only a reply with no real newlines at all is treated as escaped: a model
+    that broke its lines properly is left alone, so a stray `\\n` inside a code
+    block survives. Backslashes are decoded left to right, which keeps a genuine
+    escape written as `\\\\n` — the newline in `print('a\\\\nb')` — intact rather
+    than splitting the line in two, and unknown escapes (`\\d` in a regex) pass
+    through unchanged.
+    """
+    if "\n" in reply or "\\" not in reply:
+        return reply
+
+    out: list[str] = []
+    i = 0
+    while i < len(reply):
+        char = reply[i]
+        if char == "\\" and i + 1 < len(reply):
+            following = reply[i + 1]
+            if following in _ESCAPES:
+                out.append(_ESCAPES[following])
+                i += 2
+                continue
+        out.append(char)
+        i += 1
+    return "".join(out)
+
+
 def get_current_user(access_token: str | None = Cookie(None)) -> int:
     if access_token is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -355,7 +393,7 @@ async def create_message(
             {"role": "user", "content": message.text},
         ]
     )
-    reply = result["content"]
+    reply = unescape_reply(result["content"])
 
     log_exchange(conversation_id, message.text, reply)
 
